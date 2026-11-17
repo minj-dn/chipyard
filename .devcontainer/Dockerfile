@@ -32,6 +32,10 @@ SHELL ["/bin/bash", "-c"]
 # Host-level deps. Most of Chipyard's toolchain comes from conda; these cover
 # cloning, the conda installer, FireMarshal's cached-image unzip, depmod, a few
 # host-compiled helpers, plus basics expected inside a devcontainer.
+#
+# `file` and `cpio` satisfy Buildroot's host-dependency check, which FireMarshal
+# runs on every workload build. Buildroot insists on /usr/bin/file exactly, so
+# conda's copy does not count; cpio is absent from FireMarshal's conda-reqs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
@@ -47,6 +51,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         less \
         procps \
         vim \
+        file \
+        cpio \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
