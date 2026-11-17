@@ -140,6 +140,49 @@ class GemminiVCU118UARTTSIConfig extends Config(
   new chipyard.LeanGemminiDefaultParamsRocketConfig
 )
 
+/** Dual boot: one bitstream, the remote host picks bare-metal or Linux.
+  *
+  * WithVCU118Tweaks (SD on PMOD J52, DDR, JTAG on FMC_J2) plus:
+  *   - console UART and UART-TSI share the on-board USB-UART (one cable).
+  *     RX goes to both, TX is the AND of both; GPIO[0] high pins the TSI RX
+  *     idle, i.e. closes the TSI gate. Both run at 921600 baud.
+  *   - boot ROM = sdboot -DDUALBOOT: waits for MSIP (bare-metal, loaded by
+  *     uart_tsi) or the mailbox magic (Linux: closes the gate, copies the SD
+  *     payload, boots it). No timeout.
+  *   - peripheral map = the addresses in sdboot's platform.h (UART, SPI, GPIO).
+  *
+  * Host: notes/vcu118_port/dual_boot/uart_tsi_dual.py [--boot-linux].
+  *
+  * @param payloadSizeB SD payload copied by the ROM (30 MiB default; 48 << 20 for gemmini-all)
+  * @param spiClkKHz     SD SPI clock for the payload copy (25 MHz default)
+  * @param spiInitClkKHz SD SPI clock for card init (300 kHz; spec range 100-400 kHz)
+  */
+class WithVCU118DualBootTweaks(payloadSizeB: BigInt = 30 << 20, spiClkKHz: Int = 25000,
+                               spiInitClkKHz: Int = 300) extends Config(
+  new WithVCU118SharedUART ++
+  new chipyard.iobinders.WithGPIOPunchthrough ++
+  new testchipip.tsi.WithUARTTSIClient(initBaudRate = BigInt(921600)) ++
+  new chipyard.WithDualBootROM(payloadSizeB, spiClkKHz, spiInitClkKHz) ++
+  new chipyard.WithVCU118PeripheralMap(consoleBaud = 921600) ++
+  new WithVCU118Tweaks
+)
+
+class RocketVCU118DualBootConfig extends Config(
+  new WithVCU118DualBootTweaks ++
+  new chipyard.RocketConfig
+)
+
+// Rocket + Gemmini (defaultConfig), bare-metal over UART-TSI or Linux from SD.
+// 48 MiB: the gemmini-all nodisk image is 42.8 MB. SD SPI: init at 300 kHz
+// (spec 100-400 kHz; our card failed init at 25 MHz), copy at 12.5 MHz
+// (300 kHz would take ~22 min for 48 MiB). At 50 MHz pbus: SPI_INIT_DIV = 82
+// (~301 kHz), SPI_DIV = 1 (exactly 12.5 MHz).
+class GemminiVCU118DualBootConfig extends Config(
+  new WithFPGAFrequency(50) ++
+  new WithVCU118DualBootTweaks(payloadSizeB = 48 << 20, spiClkKHz = 12500) ++
+  new chipyard.LeanGemminiDefaultParamsRocketConfig
+)
+
 class BoomVCU118Config extends Config(
   new WithFPGAFrequency(50) ++
   new WithVCU118Tweaks ++

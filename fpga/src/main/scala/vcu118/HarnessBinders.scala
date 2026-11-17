@@ -32,6 +32,21 @@ class WithUARTTSI extends HarnessBinder({
   }
 })
 
+/*** Dual boot: console + TSI sharing the on-board USB-UART ***/
+// chipyard.harness.WithSharedUART with the line ending on the UARTOverlay pins
+// (AW25/BB21). RX feeds both, TX = console && TSI, GPIO[gatePin] closes the
+// TSI side (see harness/DualBootHarnessBinders.scala).
+class WithVCU118SharedUART(gatePin: Int = 0) extends chipyard.harness.WithSharedUART(
+  attach = (th: HasHarnessInstantiators, txd: Bool) => th match {
+    case vcu: VCU118FPGATestHarnessImp => {
+      val line = vcu.vcu118Outer.io_uart_bb.bundle
+      line.txd := txd
+      line.rxd
+    }
+    case _ => throw new IllegalArgumentException("WithVCU118SharedUART needs the VCU118 FPGA test harness")
+  },
+  gatePin = gatePin)
+
 /*** Console UART on PMOD J52 pins 9/10 ***/
 // PMOD0_6_LS (AT15) and PMOD0_7_LS (AT16) are the only J52 signals that neither
 // the SDIO nor the JTAG overlay claims, so the console can sit on the same
