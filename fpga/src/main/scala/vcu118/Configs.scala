@@ -140,6 +140,49 @@ class GemminiVCU118UARTTSIConfig extends Config(
   new chipyard.LeanGemminiDefaultParamsRocketConfig
 )
 
+/** Dual boot: one bitstream, the remote host picks bare-metal or Linux.
+  *
+  * WithVCU118Tweaks (SD on PMOD J52, DDR, JTAG on FMC_J2) plus:
+  *   - console UART and UART-TSI share the on-board USB-UART (one cable).
+  *     RX goes to both, TX is the AND of both; GPIO[0] high pins the TSI RX
+  *     idle, i.e. closes the TSI gate. Both run at 921600 baud.
+  *   - boot ROM = sdboot -DDUALBOOT: waits for MSIP (bare-metal, loaded by
+  *     uart_tsi) or the mailbox magic (Linux: closes the gate, copies the SD
+  *     payload, boots it). No timeout.
+  *   - peripheral map = the addresses in sdboot's platform.h (UART, SPI, GPIO).
+  *
+  * Host: notes/vcu118_port/dual_boot/uart_tsi_dual.py [--boot-linux].
+  *
+  * SD SPI clocks: init (CMD0 ... CMD16) at 300 kHz, within the spec's
+  * 100-400 kHz identification range (our card failed init at 25 MHz). Copy
+  * (CMD18) at 1 MHz: measured on the board through the J52 level shifter,
+  * reads pass up to 3.125 MHz and fail from 3.57 MHz (12.5 MHz: no response),
+  * so 1 MHz keeps a ~3.5x margin. 48 MiB then takes ~7 min.
+  *
+  * @param payloadSizeB SD payload copied by the ROM (30 MiB default; 48 << 20 for gemmini-all)
+  * @param spiClkKHz     SD SPI clock for the payload copy (1 MHz default)
+  * @param spiInitClkKHz SD SPI clock for card init (300 kHz default)
+  */
+class WithVCU118DualBootTweaks(payloadSizeB: BigInt = 30 << 20, spiClkKHz: Int = 1000,
+                               spiInitClkKHz: Int = 300) extends Config(
+  new WithVCU118SharedUART ++
+  new chipyard.iobinders.WithGPIOPunchthrough ++
+  new testchipip.tsi.WithUARTTSIClient(initBaudRate = BigInt(921600)) ++
+  new chipyard.WithDualBootROM(payloadSizeB, spiClkKHz, spiInitClkKHz) ++
+  new chipyard.WithVCU118PeripheralMap(consoleBaud = 921600) ++
+  new WithVCU118Tweaks
+)
+
+// Rocket + Gemmini (defaultConfig), bare-metal over UART-TSI or Linux from SD.
+// 48 MiB: the gemmini-all nodisk image is 42.8 MB. SD SPI clocks are the
+// WithVCU118DualBootTweaks defaults; at 50 MHz pbus: SPI_INIT_DIV = 82
+// (~301 kHz), SPI_DIV = 24 (exactly 1 MHz).
+class GemminiVCU118DualBootConfig extends Config(
+  new WithFPGAFrequency(50) ++
+  new WithVCU118DualBootTweaks(payloadSizeB = 48 << 20) ++
+  new chipyard.LeanGemminiDefaultParamsRocketConfig
+)
+
 class BoomVCU118Config extends Config(
   new WithFPGAFrequency(50) ++
   new WithVCU118Tweaks ++
