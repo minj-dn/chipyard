@@ -22,7 +22,22 @@
   // (build-setup.sh step 9). Without it, `mount -o loop` fails with
   // "Operation not permitted" / exit 32 (no /dev/loop*, no CAP_SYS_ADMIN).
   // Requires the host kernel to provide loop support (standard on Linux).
-  "runArgs": ["--init", "--privileged"],
+  // `--network=host` lets the container see the host's NICs, so Vivado's
+  // node-locked license (bound to the host MAC address) validates in here.
+  "runArgs": ["--init", "--privileged", "--network=host"],
+  // Vivado lives on the host (not baked into the image): bind-mount the install
+  // read-only at the same path; the shared node-locked license lives inside it at
+  // /opt/Xilinx/licenses. Also bind the host user's ~/.Xilinx for Vivado's
+  // per-user state. The ~/.Xilinx source must exist on the host
+  // (`mkdir -p ~/.Xilinx`) or the container fails to start.
+  "mounts": [
+    "source=/opt/Xilinx,target=/opt/Xilinx,type=bind,readonly",
+    "source=${localEnv:HOME}/.Xilinx,target=/home/vscode/.Xilinx,type=bind"
+  ],
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/opt/Xilinx/Vivado/2025.2/bin",
+    "XILINXD_LICENSE_FILE": "/opt/Xilinx/licenses"
+  },
   "customizations": {
     "vscode": {
       "extensions": [

@@ -49,6 +49,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         vim \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
+
+# Runtime libraries for the host's Vivado (bind-mounted at /opt/Xilinx, see
+# devcontainer.json). Batch-mode synthesis/impl and the GUI/Hardware Manager
+# both load these X11/font libs; ubuntu:24.04 base ships none of them.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libx11-6 \
+        libxext6 \
+        libxrender1 \
+        libxtst6 \
+        libxi6 \
+        libfreetype6 \
+        libfontconfig1 \
+        libgtk-3-0t64 \
+        net-tools \
+    && rm -rf /var/lib/apt/lists/*
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
 # Create the non-root `vscode` user. ubuntu:24.04 ships an `ubuntu` user at
