@@ -1106,20 +1106,28 @@ Below are the changes from the defaults and why. Apply `notes/vcu118_port/patche
 // Total payload in B
 // 48 MiB instead of the 30 MiB default: the gemmini-all nodisk flat image is
 // 42,813,448 B (85% of 48 MiB).
+#ifndef PAYLOAD_SIZE_B
 #define PAYLOAD_SIZE_B (48 << 20)
+#endif
 ...
-// SPI SCLK frequency, in kHz
-// The default is 25000 (25 MHz High Speed mode), but with our SD card the init
-// commands do not complete at 25 MHz. 300 kHz is within the 100-400 kHz range
-// the SD spec requires during initialization. sd_poweron() and copy() share
-// SPI_DIV, so the payload copy also runs at 300 kHz.
+// SPI SCLK frequency for the payload copy (copy(), CMD18), in kHz
+// 300 kHz instead of the 25 MHz default. ...
+#ifndef SPI_CLK
 #define SPI_CLK 	300
+#endif
+
+// SPI SCLK frequency during card initialization (CMD0 ... CMD16), in kHz.
+#ifndef SPI_INIT_CLK
+#define SPI_INIT_CLK	300
+#endif
 ...
 #define SPI_DIV 	(((F_CLK * 1000) / SPI_CLK) / 2 - 1)
+#define SPI_INIT_DIV	(((F_CLK * 1000) / SPI_INIT_CLK) / 2 - 1)
 ```
 
 - `F_CLK` is the pbus clock (MHz) passed in at elaboration. At 50 MHz, `SPI_DIV` = 50000 / 300 / 2 − 1 = **82**, so the actual SCK = 50 MHz / (2 × 83) ≈ **301 kHz**.
-- `sd_poweron()` (initialization) and `copy()` (payload copy) use the same `SPI_DIV`, so **the copy also runs at 300 kHz**.
+- **Init and copy clocks are separate.** `sd_poweron()` (initialization, CMD0–CMD16) uses `SPI_INIT_DIV` from `SPI_INIT_CLK`, and `copy()` (payload copy, CMD18) uses `SPI_DIV` from `SPI_CLK`. Both default to 300 kHz in `sd.c`, so here **the copy also runs at 300 kHz**, as in the released bitstream. Both can be overridden at build time (`-DSPI_CLK=… -DSPI_INIT_CLK=…`); the dual-boot config uses 300 kHz init / 1 MHz copy (`dual_boot/README.md`).
+- **Expected limit of `SPI_CLK`: about 3 MHz.** Measured with our card and the Pmod microSD adapter on J52 (level-shifted by U41): copies pass up to 3.125 MHz and fail from 3.57 MHz (CMD18 CRC error, then no response at 5 MHz and above; 12.5 MHz always fails). Keep `SPI_CLK` at 1 MHz or below for margin. The limit depends on the card and adapter.
 - Loading an image of 30 MiB or less with the new BootROM is fine. Conversely, **loading a 48 MiB-class image with a 30 MiB BootROM leaves the tail unloaded and boot fails silently**.
 
 ⚠️ **Caution** (when regenerating): These values are part of the BootROM, so **the Linux bitstream must be regenerated** after changing them. Changing only `sd.c` does not trigger re-elaboration (see the caution in 4.1).
