@@ -8,15 +8,24 @@
 #define DEBUG
 #include "kprintf.h"
 
+// PAYLOAD_SIZE_B, BBL_PARTITION_START_SECTOR, SPI_CLK and SPI_INIT_CLK may be overridden from
+// the Makefile (BOOT_DEFS), e.g. by the dual-boot ROM built during elaboration.
+
 // Total payload in B
-#define PAYLOAD_SIZE_B (30 << 20) // default: 30MiB
+// 48 MiB instead of the 30 MiB default: the gemmini-all nodisk flat image is
+// 42,813,448 B (85% of 48 MiB).
+#ifndef PAYLOAD_SIZE_B
+#define PAYLOAD_SIZE_B (48 << 20)
+#endif
 // A sector is 512 bytes, so (1 << 11) * 512B = 1 MiB
 #define SECTOR_SIZE_B 512
 // Payload size in # of sectors
 #define PAYLOAD_SIZE (PAYLOAD_SIZE_B / SECTOR_SIZE_B)
 
 // The sector at which the BBL partition starts
+#ifndef BBL_PARTITION_START_SECTOR
 #define BBL_PARTITION_START_SECTOR 34
+#endif
 
 #ifndef TL_CLK
 #error Must define TL_CLK
@@ -24,14 +33,26 @@
 
 #define F_CLK 		(TL_CLK)
 
-// SPI SCLK frequency, in kHz
-// We are using the 25MHz High Speed mode. If this speed is not supported by the
-// SD card, consider changing to the Default Speed mode (12.5 MHz).
-#define SPI_CLK 	25000
+// SPI SCLK frequency for the payload copy (copy(), CMD18), in kHz
+// 300 kHz instead of the 25 MHz default. With our SD card, 25 MHz did not get
+// past the init commands back when init and copy shared one divisor; init now
+// runs at SPI_INIT_CLK (300 kHz). The copy stays at 300 kHz here so the ROM
+// matches the released GemminiVCU118SDConfig50-sd48-spi300k bitstream.
+#ifndef SPI_CLK
+#define SPI_CLK 	300
+#endif
+
+// SPI SCLK frequency during card initialization (CMD0 ... CMD16), in kHz.
+// The SD spec limits the identification phase to 100-400 kHz (fOD); only the
+// data transfer (CMD18, copy()) runs at SPI_CLK. Default 300 kHz.
+#ifndef SPI_INIT_CLK
+#define SPI_INIT_CLK	300
+#endif
 
 // SPI clock divisor value
 // @see https://ucb-bar.gitbook.io/baremetal-ide/baremetal-ide/using-peripheral-devices/sifive-ips/serial-peripheral-interface-spi
 #define SPI_DIV 	(((F_CLK * 1000) / SPI_CLK) / 2 - 1)
+#define SPI_INIT_DIV	(((F_CLK * 1000) / SPI_INIT_CLK) / 2 - 1)
 
 static volatile uint32_t * const spi = (void *)(SPI_CTRL_ADDR);
 
@@ -88,9 +109,8 @@ static inline void sd_cmd_end(void)
 static void sd_poweron(void)
 {
 	long i;
-	// HACK: frequency change
-
-	REG32(spi, SPI_REG_SCKDIV) = SPI_DIV;
+	// Identification phase: slow clock (SPI_INIT_CLK). copy() switches to SPI_CLK.
+	REG32(spi, SPI_REG_SCKDIV) = SPI_INIT_DIV;
 	REG32(spi, SPI_REG_CSMODE) = SPI_CSMODE_OFF;
 	for (i = 10; i > 0; i--) {
 		sd_dummy();
@@ -225,8 +245,74 @@ static int copy(void)
 	return rc;
 }
 
+#ifdef DUALBOOT
+/*
+ * Dual boot: one bitstream, the host picks bare-metal (UART-TSI) or Linux (SD).
+ *
+ * The on-board USB-UART is shared by the console UART and UART-TSI. RX feeds
+ * both; TX is the AND of both (idle = 1). GPIO[0] driven high (oe && val)
+ * pins the TSI RX to idle, i.e. closes the gate. Out of reset the GPIO is not
+ * driven, so the gate is open and uart_tsi works as on a TSI-only bitstream.
+ *
+ * While waiting, the ROM must not print: TX is shared with TSI responses.
+ *
+ *   MSIP set                     -> host loaded a program over TSI: bare-metal
+ *   mailbox == BOOT_MAGIC_LINUX  -> ack, close the gate, boot Linux from SD
+ *
+ * There is no timeout; bare-metal is the default.
+ */
+#define BOOT_MAILBOX     0x8ffff800UL  /* above the head.S stack top 0x8ffff000 */
+#define BOOT_MAGIC_LINUX 0x4c494e5558534421ULL  /* "LINUXSD!" */
+#define BOOT_ACK         0x41434b4544545349ULL  /* "ACKEDTSI" */
+#define TSI_GATE_PIN     0
+
+static volatile uint64_t * const mbox = (void *)(BOOT_MAILBOX);
+static volatile uint32_t * const msip = (void *)(CLINT_CTRL_ADDR + CLINT_MSIP);
+static volatile uint32_t * const gpio = (void *)(GPIO_CTRL_ADDR);
+
+static void tsi_gate_close(void)
+{
+	/* Value first, then enable, so the pin never drives 0 -> no glitch. */
+	REG32(gpio, GPIO_OUTPUT_VAL) |= (1u << TSI_GATE_PIN);
+	REG32(gpio, GPIO_OUTPUT_EN)  |= (1u << TSI_GATE_PIN);
+	__asm__ __volatile__ ("fence" : : : "memory");
+}
+
+/* The TSI packets the host sent also landed in the console RX FIFO. */
+static void uart_drain_rx(void)
+{
+	while ((int32_t)REG32(uart, UART_REG_RXFIFO) >= 0)
+		;
+}
+
+static int host_wants_linux(void)
+{
+	/* DDR may still hold the flag from a previous run. */
+	*mbox = 0;
+	__asm__ __volatile__ ("fence" : : : "memory");
+	for (;;) {
+		if (msip[0]) {                 /* uart_tsi.py finished loading */
+			msip[0] = 0;
+			return 0;
+		}
+		if (*mbox == BOOT_MAGIC_LINUX) {  /* uart_tsi_dual.py --boot-linux */
+			*mbox = BOOT_ACK;
+			__asm__ __volatile__ ("fence" : : : "memory");
+			return 1;
+		}
+	}
+}
+#endif /* DUALBOOT */
+
 int main(void)
 {
+#ifdef DUALBOOT
+	if (!host_wants_linux())
+		return 0;              /* head.S jumps to PAYLOAD_DEST */
+	tsi_gate_close();
+	REG32(uart, UART_REG_RXCTRL) = UART_RXEN;
+	uart_drain_rx();
+#endif
 	REG32(uart, UART_REG_TXCTRL) = UART_TXEN;
 
 	kputs("INIT");
